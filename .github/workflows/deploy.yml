@@ -10,31 +10,28 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
+    # This maps the branch name to the specific GitHub Environment (Settings > Environments)
     environment: ${{ github.ref_name == 'main' && 'production' || github.ref_name == 'dev' && 'development' || 'staging' }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ✅ Debug Environment Mapping
-      - name: Display deployment info
+      - name: Pre-flight Variable Check
         run: |
-          echo "🚀 Deploying to: ${{ vars.SITE_TITLE }}"
-          echo "📂 Deploy path: ${{ vars.DEPLOY_PATH }}"
-          echo "🌿 Branch: ${{ github.ref_name }}"
-          echo "🔑 SSH Key Exists: ${{ secrets.SSH_PRIVATE_KEY != '' }}"
+          echo "🚀 Deploying to Environment: ${{ github.ref_name }}"
+          if [ -z "${{ vars.DEPLOY_HOST }}" ]; then echo "❌ DEPLOY_HOST is missing"; exit 1; fi
+          if [ -z "${{ vars.DEPLOY_USER }}" ]; then echo "❌ DEPLOY_USER is missing"; exit 1; fi
+          if [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ]; then echo "❌ SSH_PRIVATE_KEY is missing"; exit 1; fi
 
-      # ✅ Validate SSH Key (CRITICAL)
-      - name: Validate SSH key format
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      - name: Setup SSH
         run: |
-          echo "$SSH_PRIVATE_KEY" | head -2
-          echo "----"
-          echo "$SSH_PRIVATE_KEY" | tail -2
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Scan the host to prevent "Host key verification failed" errors
+          ssh-keyscan -H ${{ vars.DEPLOY_HOST }} >> ~/.ssh/known_hosts
 
-      # ✅ Replace placeholders
       - name: Replace placeholders
         run: |
           DEPLOY_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
@@ -45,55 +42,18 @@ jobs:
           sed -i "s|__DEPLOY_TIME__|${DEPLOY_TIME}|g" index.html
           sed -i "s|__COMMIT_SHA__|${COMMIT_SHA}|g" index.html
           sed -i "s|__SITE_TITLE__|${{ vars.SITE_TITLE }}|g" app.js
-          sed -i "s|__DEPLOY_TIME__|${DEPLOY_TIME}|g" app.js
 
-      # ✅ Setup SSH properly
-      - name: Setup SSH
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-
-      # ✅ Add Host Key (avoids MITM warnings)
-      - name: Add known hosts
-        env:
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-        run: |
-          ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts
-
-      # ✅ Test SSH Connection (MOST IMPORTANT STEP)
-      - name: Test SSH connection
-        env:
-          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-        run: |
-          ssh -i ~/.ssh/deploy_key \
-              -o StrictHostKeyChecking=no \
-              $DEPLOY_USER@$DEPLOY_HOST \
-              "echo ✅ CONNECTED TO SERVER"
-
-      # ✅ Deploy Files
       - name: Copy files to EC2
-        env:
-          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
         run: |
+          # We use -i to specify the key and -o to ensure the connection doesn't hang
           scp -i ~/.ssh/deploy_key \
               -o StrictHostKeyChecking=no \
               index.html style.css app.js \
-              $DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/
+              ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}:${{ vars.DEPLOY_PATH }}/
 
-      # ✅ Verify Deployment
       - name: Verify deployment
-        env:
-          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
         run: |
           ssh -i ~/.ssh/deploy_key \
-              $DEPLOY_USER@$DEPLOY_HOST \
-              "ls -la $DEPLOY_PATH"
-
+              -o StrictHostKeyChecking=no \
+              ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }} \
+              "ls -la ${{ vars.DEPLOY_PATH }}"
