@@ -57,7 +57,8 @@ jobs:
           ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts 2>/dev/null
 
           # Deploy files via SCP
-          scp -i ~/.ssh/deploy_key -r index.html style.css app.js \
+          cd $GITHUB_WORKSPACE
+          scp -i ~/.ssh/deploy_key -r ./index.html ./style.css ./app.js \
             $DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/
 
           echo "✅ Deployed to $DEPLOY_HOST:$DEPLOY_PATH"
