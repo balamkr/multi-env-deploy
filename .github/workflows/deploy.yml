@@ -11,23 +11,31 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
-    # Map branches to GitHub Environments
     environment: ${{ github.ref_name == 'main' && 'production' || github.ref_name == 'dev' && 'development' || 'staging' }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # ✅ Debug Environment Mapping
       - name: Display deployment info
         run: |
           echo "🚀 Deploying to: ${{ vars.SITE_TITLE }}"
           echo "📂 Deploy path: ${{ vars.DEPLOY_PATH }}"
-          echo "🎨 Site color: ${{ vars.SITE_COLOR }}"
           echo "🌿 Branch: ${{ github.ref_name }}"
-          echo "🔑 SSH Key loaded: ${{ secrets.SSH_PRIVATE_KEY != '' }}"
+          echo "🔑 SSH Key Exists: ${{ secrets.SSH_PRIVATE_KEY != '' }}"
 
-      - name: Replace placeholders with environment values
-        working-directory: ${{ github.workspace }}
+      # ✅ Validate SSH Key (CRITICAL)
+      - name: Validate SSH key format
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          echo "$SSH_PRIVATE_KEY" | head -2
+          echo "----"
+          echo "$SSH_PRIVATE_KEY" | tail -2
+
+      # ✅ Replace placeholders
+      - name: Replace placeholders
         run: |
           DEPLOY_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
           COMMIT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
@@ -39,52 +47,53 @@ jobs:
           sed -i "s|__SITE_TITLE__|${{ vars.SITE_TITLE }}|g" app.js
           sed -i "s|__DEPLOY_TIME__|${DEPLOY_TIME}|g" app.js
 
-          echo "✅ Placeholders replaced"
-          head -5 index.html
-
-      - name: Debug SSH key presence
+      # ✅ Setup SSH properly
+      - name: Setup SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          if [ -z "$SSH_PRIVATE_KEY" ]; then
-            echo "❌ SSH key is EMPTY"
-          else
-            echo "✅ SSH key is PRESENT"
-          fi
-
-      - name: Deploy to EC2 via SSH
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
-          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
         run: |
           mkdir -p ~/.ssh
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts 2>/dev/null
 
-          echo "Testing SSH connection..."
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_HOST "echo CONNECTED"
+      # ✅ Add Host Key (avoids MITM warnings)
+      - name: Add known hosts
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts
 
-          echo "Copying files..."
-          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
-            index.html style.css app.js \
-            $DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/
+      # ✅ Test SSH Connection (MOST IMPORTANT STEP)
+      - name: Test SSH connection
+        env:
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=no \
+              $DEPLOY_USER@$DEPLOY_HOST \
+              "echo ✅ CONNECTED TO SERVER"
 
-          echo "✅ Deployed to $DEPLOY_HOST:$DEPLOY_PATH"
+      # ✅ Deploy Files
+      - name: Copy files to EC2
+        env:
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        run: |
+          scp -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=no \
+              index.html style.css app.js \
+              $DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/
 
+      # ✅ Verify Deployment
       - name: Verify deployment
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
           DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
         run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-
-          ssh -i ~/.ssh/deploy_key $DEPLOY_USER@$DEPLOY_HOST "ls -la $DEPLOY_PATH"
-          echo "✅ Deployment verified!"
+          ssh -i ~/.ssh/deploy_key \
+              $DEPLOY_USER@$DEPLOY_HOST \
+              "ls -la $DEPLOY_PATH"
 
